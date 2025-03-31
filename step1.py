@@ -6,6 +6,7 @@ import os
 import time
 import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import requests
 
 app = Flask(__name__)
 app.config['JSON_AS_ASCII'] = False
@@ -39,16 +40,35 @@ def call_model(prompt):
         print(f"请求耗时: {end - start:.2f}秒")
 
         answer_content = ""
+        is_answering = False
         for chunk in response:
             if chunk.choices:
                 delta = chunk.choices[0].delta
-                if delta.content:
-                    print(delta.content, end='', flush=True)
-                    answer_content += delta.content
+                if hasattr(delta, 'reasoning_content') and delta.reasoning_content:
+                    print(delta.reasoning_content, end='', flush=True)
+                    answer_content += delta.reasoning_content
+                else:
+                    if delta.content and not is_answering:
+                        print("\n==================== 完整回复 ====================\n")
+                        is_answering = True
+                    if delta.content:
+                        print(delta.content, end='', flush=True)
+                        answer_content += delta.content
         return answer_content.strip() if answer_content else "不适用"
     except Exception as e:
         print("[错误] 模型调用失败:", e)
         return "不适用"
+
+# Step1.5 接口调用函数
+def get_guidance_question(question, diagnosis):
+    url = "http://localhost:5001/api"  # Step1.5 服务地址
+    payload = {"question": question, "diagnosis": diagnosis}
+    headers = {'Content-Type': 'application/json'}
+    response = requests.post(url, json=payload, headers=headers)
+    if response.status_code == 200:
+        result = response.json()
+        return result.get("guidance_question", "无法生成引导问题")
+    return "无法生成引导问题"
 
 @app.route('/api', methods=['POST'])
 def api_endpoint():
@@ -57,7 +77,7 @@ def api_endpoint():
         data = json.loads(raw_data)
         question = data.get("question", "").strip()
 
-        # ✅ 控制台兼容打印（防止乱码）
+        # 控制台兼容打印（防止乱码）
         try:
             print("接收到问题:", question.encode('utf-8').decode('utf-8'))
         except UnicodeEncodeError:
@@ -70,6 +90,12 @@ def api_endpoint():
     if not question:
         return jsonify({"diagnosis": "不适用", "candidates": []}), 200
 
+    # 获取引导性问题
+    guidance_question = get_guidance_question(question, "不适用")
+    if guidance_question != "不需要额外引导问题":
+        return jsonify({"question": question, "guidance_question": guidance_question}), 200
+
+    # 继续诊断逻辑
     chunks = [diagnosis_list[i:i+CHUNK_SIZE] for i in range(0, len(diagnosis_list), CHUNK_SIZE)]
 
     def process_chunk(chunk):
@@ -122,7 +148,7 @@ def api_endpoint():
 
     return jsonify({
         "diagnosis": final_pick,
-        "candidates": [d for d in candidate_diagnoses]
+        "candidates": candidate_diagnoses
     }), 200
 
 if __name__ == '__main__':

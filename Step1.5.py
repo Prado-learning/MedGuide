@@ -1,38 +1,61 @@
 from flask import Flask, request, jsonify
-import requests
+import os
 import json
-import re
+from openai import OpenAI
 
 app = Flask(__name__)
 app.json.ensure_ascii = False
 
-# 连接到大模型的API
-url = "https://9zekn5682505.vicp.fun/v1/chat/completions"
-headers = {'Content-Type': 'application/json'}
-model_name = "BUPTmodel-70B"
+# 初始化阿里云 QwQ 客户端
+client = OpenAI(
+    api_key="sk-1d9f630ab5a34072b30ac4630021a643",
+    base_url="https://dashscope.aliyuncs.com/compatible-mode/v1"
+)
+
+model_name = "qwq-plus"
 
 def call_model(prompt):
-    payload = {
-        "model": model_name,
-        "messages": [{"role": "user", "content": prompt}],
-        "temperature": 0.7,
-        "max_tokens": 128
-    }
     try:
-        resp = requests.post(url, headers=headers, data=json.dumps(payload), timeout=5)
-        if resp.status_code != 200:
-            return "无法生成引导问题"
-        resp_data = resp.json()
-        return resp_data["choices"][0]["message"]["content"].strip()
-    except:
+        completion = client.chat.completions.create(
+            model=model_name,
+            messages=[{"role": "user", "content": prompt}],
+            stream=True
+        )
+        answer_content = ""
+        is_answering = False
+        for chunk in completion:
+            if chunk.choices:
+                delta = chunk.choices[0].delta
+                if hasattr(delta, 'reasoning_content') and delta.reasoning_content:
+                    print(delta.reasoning_content, end='', flush=True)
+                    answer_content += delta.reasoning_content
+                else:
+                    if delta.content and not is_answering:
+                        print("\n==================== 完整回复 ====================\n")
+                        is_answering = True
+                    if delta.content:
+                        print(delta.content, end='', flush=True)
+                        answer_content += delta.content
+        return answer_content.strip() if answer_content else "无法生成引导问题"
+    except Exception as e:
+        print("[错误] 模型调用失败:", e)
         return "无法生成引导问题"
 
 @app.route('/api', methods=['POST'])
 def api_endpoint():
     if request.method == 'POST':
-        data = request.json
+        try:
+            raw_data = request.get_data(as_text=True)
+            data = json.loads(raw_data)
+        except Exception as e:
+            print("[错误] 请求 JSON 解码失败:", e)
+            return jsonify({"guidance_question": "请求数据格式错误"}), 400
+
         question = data.get("question", "").strip()
         diagnosis = data.get("diagnosis", "").strip()
+
+        if not question:
+            return jsonify({"guidance_question": "未提供有效的患者描述"}), 400
 
         if diagnosis == "不适用":
             prompt = (
@@ -43,9 +66,9 @@ def api_endpoint():
                 "请直接输出问题内容，不要添加额外的解释。"
             )
             guidance_question = call_model(prompt)
-            return jsonify({"question": question, "guidance_question": guidance_question}), 200
-        
-        return jsonify({"question": question, "guidance_question": "不需要额外引导问题"}), 200
+            return jsonify({"guidance_question": guidance_question}), 200
+
+        return jsonify({"guidance_question": "不需要额外引导问题"}), 200
 
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=5001)
